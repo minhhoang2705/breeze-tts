@@ -1,0 +1,4 @@
+-r requirements.txt
+jiwer>=3.0
+faster-whisper>=1.0
+speechbrain>=1.0

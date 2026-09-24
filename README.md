@@ -178,6 +178,39 @@ Both the CLI and API use eager streaming by default and skip graph warmup. Pass 
 
 Individual stage flags are intended for profiling and debugging.
 
+## 🏋️ Training (LoRA fine-tuning)
+
+`breeze_train/` and `train.py` add a LoRA fine-tuning pipeline around the
+model's built-in training loss. It never touches `breeze_infer/`, `infer.py`,
+or `models/`.
+
+```bash
+python -m pip install -r requirements-train.txt
+
+# 1. Cache codec tokens for a JSONL manifest (id, audio_path, text, plus
+#    optional instruction / ref_audio_path / ref_text).
+python -m breeze_train.codec_cache ../breeze-tts-2 data/my_manifest.jsonl data/codec_cache
+
+# 2. Train with the default LoRA r=32 policy (fits a 12 GB GPU).
+python train.py ../breeze-tts-2 \
+  --config configs/train_p1_lora_12gb.json \
+  --manifest data/my_manifest.jsonl \
+  --cache-dir data/codec_cache \
+  --output-dir outputs/my_run \
+  --max-steps 1000
+
+# 3. Merge the LoRA adapter into a checkpoint unmodified infer.py can load.
+python -m breeze_train.export ../breeze-tts-2 outputs/my_run/checkpoint-1000 outputs/my_run/merged
+python infer.py outputs/my_run/merged --text "..." --output outputs/tuned.wav
+```
+
+Model weights, checkpoints, adapters, and derivative models produced by this
+pipeline are governed by the same [BreezeBlue Research and Non-Commercial
+License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) as
+the base checkpoint (see [License and Responsible Use](#license-and-responsible-use));
+the exporter copies `LICENSE` into every merged checkpoint it produces.
+
+
 
 ## License and Responsible Use
 

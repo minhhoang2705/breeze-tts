@@ -17,3 +17,8 @@ htmlcov/
 .env.*
 !.env.example
 
+data/
+
+# local planning notes, journals, reports
+plans/
+.venv/
