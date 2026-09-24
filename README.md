@@ -210,9 +210,16 @@ License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) as
 the base checkpoint (see [License and Responsible Use](#license-and-responsible-use));
 the exporter copies `LICENSE` into every merged checkpoint it produces.
 
-
-
 ## License and Responsible Use
+
+> **Modification notice (Apache-2.0 §4(b)):** This repository is a fork of
+> [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts),
+> modified by minhhoang2705. Changes: added the LoRA training pipeline
+> (`breeze_train/`, `train.py`, `configs/train_p1_*.json`, `scripts/`,
+> `requirements-train.txt`, `requirements-eval.txt`, and the training tests),
+> and modified `README.md` (Training section and this notice) and `.gitignore`.
+> These additions are also licensed under Apache 2.0. Upstream files and
+> notices are otherwise unchanged.
 
 The source code is licensed under the [Apache License, Version 2.0](https://github.com/breezeblue-ai/breeze-tts/blob/main/LICENSE). The audio tokenizer is based on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by the Alibaba Qwen Team and is licensed under the Apache License, Version 2.0. Model weights, checkpoints, adapters, derivative models, and self-hosted outputs are governed separately by the [BreezeBlue Research and Non-Commercial License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE). The Apache License does not grant rights to use the model commercially.
 
