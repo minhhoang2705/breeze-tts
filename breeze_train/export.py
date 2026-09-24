@@ -8,7 +8,8 @@ copies the companion files `save_pretrained` does not write (L14), including
 `LICENSE` -- the BreezeBlue Research and Non-Commercial License governs
 model weights, checkpoints, adapters, and derivative models separately from
 the Apache-2.0 source (README.md:184), and every artifact this exporter
-produces is such a derivative.
+produces is such a derivative. `NOTICE` and a model card are written by
+`breeze_train.release` so the directory can be published as-is.
 
 Never edits `breeze_infer/runtime.py` or `infer.py` to work around a missing
 file -- the fix always belongs here.
@@ -26,6 +27,7 @@ from pathlib import Path
 import peft
 import torch
 
+from breeze_train.release import validate_release_name, write_release_files
 from models.breeze import BreezeForConditionalGeneration
 
 COMPANION_FILES = (
@@ -109,9 +111,26 @@ def main() -> None:
     parser.add_argument("adapter_dir", type=Path)
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--policy", default="p1")
+    parser.add_argument(
+        "--name", help="Model card name (default: out_dir name); must not use 'Breeze'/'BreezeBlue'"
+    )
+    parser.add_argument("--dataset", help="Fine-tuning dataset id, e.g. capleaf/viVoice")
+    parser.add_argument("--dataset-license", help="License of the fine-tuning dataset")
     args = parser.parse_args()
+    name = args.name or args.out_dir.name
+    # Fail before the multi-minute merge, not after it.
+    validate_release_name(name)
 
     export_checkpoint(args.base_dir, args.adapter_dir, args.out_dir)
+    write_release_files(
+        args.out_dir,
+        args.base_dir,
+        name=name,
+        merged=True,
+        adapter_dir=args.adapter_dir,
+        dataset=args.dataset,
+        dataset_license=args.dataset_license,
+    )
 
     adapter_config_path = args.adapter_dir / "adapter_config.json"
     lora_rank = None

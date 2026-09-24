@@ -200,15 +200,29 @@ python train.py ../breeze-tts-2 \
   --max-steps 1000
 
 # 3. Merge the LoRA adapter into a checkpoint unmodified infer.py can load.
-python -m breeze_train.export ../breeze-tts-2 outputs/my_run/checkpoint-1000 outputs/my_run/merged
+python -m breeze_train.export ../breeze-tts-2 outputs/my_run/checkpoint-1000 outputs/my_run/merged \
+  --name my-vi-tts --dataset capleaf/viVoice --dataset-license "<license from the dataset card>"
 python infer.py outputs/my_run/merged --text "..." --output outputs/tuned.wav
 ```
 
 Model weights, checkpoints, adapters, and derivative models produced by this
 pipeline are governed by the same [BreezeBlue Research and Non-Commercial
 License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE) as
-the base checkpoint (see [License and Responsible Use](#license-and-responsible-use));
-the exporter copies `LICENSE` into every merged checkpoint it produces.
+the base checkpoint (see [License and Responsible Use](#license-and-responsible-use)).
+The exporter writes the files that license requires for distribution into every
+merged checkpoint: `LICENSE`, a `NOTICE` file, and a model card (`README.md`)
+stating "Derived from Breeze TTS 2 by BreezeBlue and licensed for research and
+non-commercial use only." To publish an unmerged adapter instead, add the same
+files to its directory first:
+
+```bash
+python -m breeze_train.release ../breeze-tts-2 outputs/my_run/checkpoint-1000 \
+  --name my-vi-tts-lora --dataset capleaf/viVoice --dataset-license "<license from the dataset card>"
+```
+
+Both commands reject release names containing "Breeze" or "BreezeBlue": the
+license forbids using those marks as a derivative model's primary name. The
+fine-tuning dataset's own terms also apply to anything trained on it.
 
 ## License and Responsible Use
 
