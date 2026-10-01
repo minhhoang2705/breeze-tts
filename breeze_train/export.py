@@ -1,15 +1,22 @@
-"""Merged checkpoint export.
+"""Inference-ready checkpoint export.
 
-Turns an adapter checkpoint into a directory `infer.py` can load unmodified:
-merges the LoRA adapters into the base weights (L13 -- PEFT `save_pretrained`
-alone writes only `adapter_model.safetensors` / `adapter_config.json`, and
-`breeze_infer/runtime.py` does a plain `from_pretrained(ckpt_dir)`), and
-copies the companion files `save_pretrained` does not write (L14), including
-`LICENSE` -- the BreezeBlue Research and Non-Commercial License governs
-model weights, checkpoints, adapters, and derivative models separately from
-the Apache-2.0 source (README.md:184), and every artifact this exporter
-produces is such a derivative. `NOTICE` and a model card are written by
-`breeze_train.release` so the directory can be published as-is.
+Turns a training checkpoint into a directory `infer.py` can load unmodified.
+Two checkpoint kinds, told apart by `adapter_config.json`:
+
+- LoRA (p1): merges the adapters into the base weights (L13 -- PEFT
+  `save_pretrained` alone writes only `adapter_model.safetensors` /
+  `adapter_config.json`, and `breeze_infer/runtime.py` does a plain
+  `from_pretrained(ckpt_dir)`).
+- Full fine-tune (p0/p1b/p2): the checkpoint already holds every weight, with
+  the trained ones as fp32 master copies; it is reloaded and saved in bf16
+  like the base checkpoint, dropping optimizer/scheduler state.
+
+Either way it copies the companion files `save_pretrained` does not write
+(L14), including `LICENSE` -- the BreezeBlue Research and Non-Commercial
+License governs model weights, checkpoints, adapters, and derivative models
+separately from the Apache-2.0 source (README.md:184), and every artifact
+this exporter produces is such a derivative. `NOTICE` and a model card are
+written by `breeze_train.release` so the directory can be published as-is.
 
 Never edits `breeze_infer/runtime.py` or `infer.py` to work around a missing
 file -- the fix always belongs here.
@@ -42,23 +49,33 @@ COMPANION_FILES = (
 )
 
 
-def merge_adapter(base_dir: str | Path, adapter_dir: str | Path):
-    # Load on CPU: the merge is weight arithmetic and does not need the GPU;
-    # keeping it off the 12 GB card avoids competing with anything resident
-    # there.
+def is_lora_checkpoint(checkpoint_dir: str | Path) -> bool:
+    return (Path(checkpoint_dir) / "adapter_config.json").exists()
+
+
+def load_finetuned(base_dir: str | Path, checkpoint_dir: str | Path):
+    # Load on CPU: merging/casting is weight arithmetic and does not need the
+    # GPU; keeping it off the 12 GB card avoids competing with anything
+    # resident there.
+    if not is_lora_checkpoint(checkpoint_dir):
+        return BreezeForConditionalGeneration.from_pretrained(
+            str(checkpoint_dir),
+            dtype=torch.bfloat16,
+            attn_implementation="eager",
+            device_map=None,
+        )
     model = BreezeForConditionalGeneration.from_pretrained(
         str(base_dir),
         dtype=torch.bfloat16,
         attn_implementation="eager",
         device_map=None,
     )
-    peft_model = peft.PeftModel.from_pretrained(model, str(adapter_dir))
-    merged = peft_model.merge_and_unload()
-    return merged
+    peft_model = peft.PeftModel.from_pretrained(model, str(checkpoint_dir))
+    return peft_model.merge_and_unload()
 
 
 def export_checkpoint(
-    base_dir: str | Path, adapter_dir: str | Path, out_dir: str | Path
+    base_dir: str | Path, checkpoint_dir: str | Path, out_dir: str | Path
 ) -> None:
     base_dir = Path(base_dir)
     out_dir = Path(out_dir)
@@ -71,9 +88,9 @@ def export_checkpoint(
                 f"Companion file missing from base checkpoint: {src}"
             )
 
-    merged = merge_adapter(base_dir, adapter_dir)
-    merged.save_pretrained(str(out_dir), safe_serialization=True)
-    del merged
+    model = load_finetuned(base_dir, checkpoint_dir)
+    model.save_pretrained(str(out_dir), safe_serialization=True)
+    del model
     gc.collect()
 
     for rel_path in COMPANION_FILES:
@@ -105,10 +122,10 @@ def export_checkpoint(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge a LoRA adapter checkpoint into a loadable Breeze TTS 2 directory"
+        description="Export a LoRA or full fine-tune checkpoint as a loadable Breeze TTS 2 directory"
     )
     parser.add_argument("base_dir", type=Path)
-    parser.add_argument("adapter_dir", type=Path)
+    parser.add_argument("checkpoint_dir", type=Path, help="Trainer checkpoint-* directory")
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--policy", default="p1")
     parser.add_argument(
@@ -121,26 +138,26 @@ def main() -> None:
     # Fail before the multi-minute merge, not after it.
     validate_release_name(name)
 
-    export_checkpoint(args.base_dir, args.adapter_dir, args.out_dir)
+    export_checkpoint(args.base_dir, args.checkpoint_dir, args.out_dir)
     write_release_files(
         args.out_dir,
         args.base_dir,
         name=name,
         merged=True,
-        adapter_dir=args.adapter_dir,
+        adapter_dir=args.checkpoint_dir,
         dataset=args.dataset,
         dataset_license=args.dataset_license,
     )
 
-    adapter_config_path = args.adapter_dir / "adapter_config.json"
     lora_rank = None
-    if adapter_config_path.exists():
-        adapter_config = json.loads(adapter_config_path.read_text())
+    if is_lora_checkpoint(args.checkpoint_dir):
+        adapter_config = json.loads((args.checkpoint_dir / "adapter_config.json").read_text())
         lora_rank = adapter_config.get("r")
 
     export_info = {
         "policy": args.policy,
-        "adapter_dir": str(args.adapter_dir),
+        "checkpoint_dir": str(args.checkpoint_dir),
+        "checkpoint_kind": "lora" if is_lora_checkpoint(args.checkpoint_dir) else "full",
         "base_dir": str(args.base_dir),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "lora_rank": lora_rank,

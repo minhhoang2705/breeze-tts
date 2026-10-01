@@ -244,7 +244,17 @@ python train.py ... --resume outputs/my_run/checkpoint-600
 python train.py ... --wandb-project breeze-vi --wandb-run-name scale3-2xh100 \
   --wandb-entity <team> --wandb-tags lora,scale3
 
-# 3. Merge the LoRA adapter into a checkpoint unmodified infer.py can load.
+# 2f. Full fine-tuning (--policy p2: backbone, depth decoder, lm_head,
+#     text_encoder_proj; text encoder and codec stay frozen). Trainable weights
+#     are kept as fp32 master copies (bf16 compute via autocast), so DDP is
+#     safe. Preset for 2x H100 80GB (LR 1e-5, ~22 GiB per checkpoint, keeps 3):
+accelerate launch --config_file configs/accelerate_multi_gpu.yaml --num_processes 2 \
+  train.py ../breeze-tts-2 --config configs/train_p2_vietnamese_scale3_2xh100.json \
+  --manifest data/my_manifest.jsonl --cache-dir data/codec_cache --output-dir outputs/my_full_run
+
+# 3. Export any checkpoint into a directory unmodified infer.py can load:
+#    LoRA checkpoints are merged into the base weights, full fine-tune
+#    checkpoints are re-saved in bf16 without optimizer state.
 python -m breeze_train.export ../breeze-tts-2 outputs/my_run/checkpoint-1000 outputs/my_run/merged \
   --name my-vi-tts --dataset capleaf/viVoice --dataset-license "<license from the dataset card>"
 python infer.py outputs/my_run/merged --text "..." --output outputs/tuned.wav

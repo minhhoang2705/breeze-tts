@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import peft
+import torch
 
 # Module-anchored: only linears under backbone_model.* or depth_decoder.*,
 # never text_encoder.* or codec_model.* (both of which also contain
@@ -28,6 +29,27 @@ LORA_TARGET_REGEX = (
 def _freeze_all(model: Any) -> None:
     for p in model.parameters():
         p.requires_grad_(False)
+
+
+def upcast_trainable_to_fp32(model: Any) -> int:
+    """Keep fp32 master copies of every trainable parameter; returns how many
+    elements were upcast.
+
+    train.py loads the checkpoint in bf16 and the Trainer's `bf16=True` only
+    enables autocast, so policies that train base weights (p0, p1b, p2) would
+    otherwise hold bf16 params *and* bf16 AdamW states: full-fine-tune-sized
+    updates fall below bf16 resolution and are silently rounded away. LoRA
+    params are already fp32 (PEFT autocast_adapter_dtype), so p1 is a no-op.
+    Frozen modules stay bf16; autocast still runs the matmuls in bf16.
+    `named_parameters()` dedups the tied audio embedding, and assigning
+    `.data` keeps the same Parameter object, so the tie survives.
+    """
+    upcast = 0
+    for _, param in model.named_parameters():
+        if param.requires_grad and param.dtype != torch.float32:
+            param.data = param.data.float()
+            upcast += param.numel()
+    return upcast
 
 
 def apply_policy(

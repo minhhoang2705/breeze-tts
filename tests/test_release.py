@@ -54,6 +54,20 @@ def test_writes_required_distribution_files(base_dir, adapter_dir):
     assert "LoRA rank: 32" in card
 
 
+def test_full_finetune_card_is_not_labelled_lora(base_dir, tmp_path):
+    # A p2 checkpoint has no adapter_config.json.
+    checkpoint = tmp_path / "checkpoint-300"
+    checkpoint.mkdir()
+    out = tmp_path / "exported"
+    out.mkdir()
+    write_release_files(out, base_dir, name="vi-tts-full", merged=True, adapter_dir=checkpoint)
+    card = (out / "README.md").read_text()
+    assert "Fully fine-tuned weights" in card
+    assert "- lora" not in card
+    assert "LoRA" not in card
+    assert DERIVED_STATEMENT in card
+
+
 def test_notice_keeps_base_notice_first(base_dir, adapter_dir):
     (base_dir / "NOTICE").write_text("Upstream notice.\n")
     write_release_files(adapter_dir, base_dir, name="vi-tts", merged=True, adapter_dir=adapter_dir)

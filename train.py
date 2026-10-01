@@ -31,7 +31,7 @@ from transformers.trainer_utils import get_last_checkpoint
 import models.breeze  # noqa: F401
 from breeze_train.collator import BreezeDataCollator
 from breeze_train.dataset import BreezeTrainDataset
-from breeze_train.policy import apply_policy, enable_memory_savings
+from breeze_train.policy import apply_policy, enable_memory_savings, upcast_trainable_to_fp32
 from breeze_train.trainer import BreezeTrainer
 from models.breeze import BreezeForConditionalGeneration
 
@@ -124,6 +124,8 @@ def main() -> None:
         lora_alpha=cfg.get("lora_alpha", 64),
         lora_dropout=cfg.get("lora_dropout", 0.05),
     )
+    upcast = upcast_trainable_to_fp32(model)
+    logger.info(f"policy={policy} upcast_trainable_params_to_fp32={upcast}")
     # Default on (fits 12 GB). Large-memory GPUs (H100 80 GB) can turn it off
     # for ~one fewer forward recompute per step; LoRA params then require
     # grad directly, so enable_input_require_grads() is not needed either.
@@ -192,6 +194,9 @@ def main() -> None:
         max_grad_norm=cfg.get("max_grad_norm", 1.0),
         logging_steps=cfg.get("logging_steps", 1),
         save_steps=save_steps,
+        # Full fine-tune checkpoints are large (fp32 trainable weights plus
+        # AdamW state); null keeps every checkpoint.
+        save_total_limit=cfg.get("save_total_limit"),
         max_steps=max_steps,
         report_to=report_to,
         run_name=args.wandb_run_name,

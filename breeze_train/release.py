@@ -65,6 +65,7 @@ def _model_card(
     dataset: str | None,
     dataset_license: str | None,
 ) -> str:
+    is_lora = (adapter_dir / "adapter_config.json").exists()
     front_matter = [
         "---",
         "license: other",
@@ -74,19 +75,25 @@ def _model_card(
         "pipeline_tag: text-to-speech",
         "tags:",
         "- text-to-speech",
-        "- lora",
+        *(["- lora"] if is_lora else []),
         "- non-commercial",
     ]
     if dataset:
         front_matter += ["datasets:", f"- {dataset}"]
     front_matter.append("---")
 
-    kind = (
-        "LoRA adapter merged into the base weights; loads with the unmodified "
-        "Breeze TTS 2 `infer.py`."
-        if merged
-        else f"Unmerged LoRA adapter; load it on top of `{BASE_MODEL_ID}` with PEFT."
-    )
+    if not is_lora:
+        kind = (
+            "Fully fine-tuned weights (no adapter); loads with the unmodified "
+            "Breeze TTS 2 `infer.py`."
+        )
+    elif merged:
+        kind = (
+            "LoRA adapter merged into the base weights; loads with the unmodified "
+            "Breeze TTS 2 `infer.py`."
+        )
+    else:
+        kind = f"Unmerged LoRA adapter; load it on top of `{BASE_MODEL_ID}` with PEFT."
     if dataset:
         data_line = f"- Fine-tuning data: `{dataset}`"
         if dataset_license:
