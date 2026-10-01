@@ -1,0 +1,17 @@
+# HF Accelerate launcher config: single-node DDP across all visible GPUs.
+# Usage:
+#   accelerate launch --config_file configs/accelerate_multi_gpu.yaml \
+#     --num_processes 4 train.py ../breeze-tts-2 --config configs/... ...
+# Precision is owned by the training config's "bf16" key (TrainingArguments),
+# so mixed_precision stays "no" here to avoid two sources of truth.
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+num_machines: 1
+machine_rank: 0
+num_processes: 4
+gpu_ids: all
+mixed_precision: "no"
+main_training_function: main
+rdzv_backend: static
+same_network: true
+use_cpu: false

@@ -1,0 +1,33 @@
+# HF Accelerate launcher config: single-node FSDP2 (fully sharded params,
+# grads and optimizer state). Mainly useful for full fine-tuning (--policy p2);
+# for LoRA (p1/p1b) plain DDP (accelerate_multi_gpu.yaml) is faster.
+# Usage:
+#   accelerate launch --config_file configs/accelerate_fsdp.yaml \
+#     --num_processes 4 train.py ../breeze-tts-2 --config configs/... ...
+# FSDP2 upcasts the bf16-loaded weights to fp32 master copies (sharded) when
+# the training config has "bf16": true, and computes in bf16.
+compute_environment: LOCAL_MACHINE
+distributed_type: FSDP
+num_machines: 1
+machine_rank: 0
+num_processes: 4
+gpu_ids: all
+mixed_precision: "no"
+main_training_function: main
+rdzv_backend: static
+same_network: true
+use_cpu: false
+fsdp_config:
+  fsdp_version: 2
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  # Backbone (qwen3), depth decoder, text encoder layers.
+  fsdp_transformer_layer_cls_to_wrap: Qwen3DecoderLayer,BreezeDecoderLayer,T5Gemma2EncoderLayer
+  fsdp_reshard_after_forward: true
+  # Full state dict so checkpoints stay ordinary PEFT adapters / HF weights
+  # that breeze_train.export and infer.py load directly.
+  fsdp_state_dict_type: FULL_STATE_DICT
+  fsdp_offload_params: false
+  fsdp_cpu_ram_efficient_loading: false
+  # Activation checkpointing stays owned by the training config's
+  # "gradient_checkpointing" key.
+  fsdp_activation_checkpointing: false

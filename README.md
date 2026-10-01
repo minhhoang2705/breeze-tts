@@ -186,6 +186,15 @@ or `models/`.
 
 ```bash
 python -m pip install -r requirements-train.txt
+# Optional: flash-attn 2 (attn_implementation "auto" uses it when installed,
+# otherwise PyTorch sdpa). Install the prebuilt wheel matching torch / CUDA /
+# Python from https://github.com/Dao-AILab/flash-attention/releases, e.g.
+# flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl.
+#
+# Training-config keys beyond batch/LR: "attn_implementation" (auto | sdpa |
+# flash_attention_2 | eager), "gradient_checkpointing" (default true), and AdamW
+# "optim" / "weight_decay" / "adam_beta1" / "adam_beta2" / "adam_epsilon" /
+# "max_grad_norm" (defaults: adamw_torch_fused, 0.0, 0.9, 0.999, 1e-8, 1.0).
 
 # 1. Cache codec tokens for a JSONL manifest (id, audio_path, text, plus
 #    optional instruction / ref_audio_path / ref_text).
@@ -198,6 +207,42 @@ python train.py ../breeze-tts-2 \
   --cache-dir data/codec_cache \
   --output-dir outputs/my_run \
   --max-steps 1000
+
+# 2b. Same run data-parallel on several GPUs (e.g. a 4x H100 node) via
+#     HF Accelerate DDP. The config's gradient_accumulation_steps is the
+#     single-GPU value and is divided by the process count, so the global
+#     batch, learning rate, and max/save steps keep their meaning while each
+#     step runs ~N times faster (override with --gradient-accumulation-steps).
+accelerate launch --config_file configs/accelerate_multi_gpu.yaml --num_processes 4 \
+  train.py ../breeze-tts-2 \
+  --config configs/train_p1_lora_12gb.json \
+  --manifest data/my_manifest.jsonl \
+  --cache-dir data/codec_cache \
+  --output-dir outputs/my_run \
+  --max-steps 1000
+# Multi-node: run on every node with --num_machines <M> --num_processes <M*4>
+#   --machine_rank <0..M-1> --main_process_ip <rank-0 host> --main_process_port 29500
+# 2x H100 80GB preset (gradient checkpointing off, 4 per GPU x accum 2, same global
+#   batch 16 as the scale3 recipe; fused AdamW, weight_decay 0.1, betas 0.9/0.95):
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True accelerate launch \
+#     --config_file configs/accelerate_multi_gpu.yaml --num_processes 2 train.py ../breeze-tts-2 \
+#     --config configs/train_p1_vietnamese_scale3_2xh100.json ...
+
+# 2c. Sharded backends (mainly for full fine-tuning, --policy p2; for LoRA, DDP
+#     above is fastest): swap the launcher config for
+#     configs/accelerate_fsdp.yaml (FSDP2), configs/accelerate_deepspeed_zero2.yaml
+#     or configs/accelerate_deepspeed_zero3.yaml. Add
+#     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True: gathering the full state
+#     dict at checkpoint time otherwise fragments memory.
+
+# 2d. Resume after an interruption (adapter, optimizer, scheduler, RNG, data
+#     position): bare --resume picks the newest checkpoint-* in --output-dir.
+python train.py ... --output-dir outputs/my_run --resume
+python train.py ... --resume outputs/my_run/checkpoint-600
+
+# 2e. Weights & Biases (losses, grad norm, LR, step_time, samples/s, ETA):
+python train.py ... --wandb-project breeze-vi --wandb-run-name scale3-2xh100 \
+  --wandb-entity <team> --wandb-tags lora,scale3
 
 # 3. Merge the LoRA adapter into a checkpoint unmodified infer.py can load.
 python -m breeze_train.export ../breeze-tts-2 outputs/my_run/checkpoint-1000 outputs/my_run/merged \
@@ -229,7 +274,7 @@ fine-tuning dataset's own terms also apply to anything trained on it.
 > **Modification notice (Apache-2.0 §4(b)):** This repository is a fork of
 > [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts),
 > modified by minhhoang2705. Changes: added the LoRA training pipeline
-> (`breeze_train/`, `train.py`, `configs/train_p1_*.json`, `scripts/`,
+> (`breeze_train/`, `train.py`, `configs/train_p1_*.json`, `configs/accelerate_*.yaml`, `configs/deepspeed/`, `scripts/`,
 > `requirements-train.txt`, `requirements-eval.txt`, and the training tests),
 > and modified `README.md` (Training section and this notice) and `.gitignore`.
 > These additions are also licensed under Apache 2.0. Upstream files and

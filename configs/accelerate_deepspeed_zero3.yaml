@@ -1,0 +1,16 @@
+# HF Accelerate launcher config: DeepSpeed ZeRO-3 (also shards parameters;
+# weights are gathered to 16-bit on save so checkpoints stay loadable).
+# Usage:
+#   accelerate launch --config_file configs/accelerate_deepspeed_zero3.yaml \
+#     --num_processes 4 train.py ../breeze-tts-2 --config configs/... ...
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+deepspeed_config:
+  deepspeed_config_file: configs/deepspeed/zero3.json
+num_machines: 1
+machine_rank: 0
+num_processes: 4
+main_training_function: main
+rdzv_backend: static
+same_network: true
+use_cpu: false

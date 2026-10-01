@@ -1,0 +1,17 @@
+# HF Accelerate launcher config: DeepSpeed ZeRO-2 (sharded optimizer state +
+# gradients). Batch, accumulation, clipping and bf16 are "auto" in the JSON and
+# come from the training config via TrainingArguments.
+# Usage:
+#   accelerate launch --config_file configs/accelerate_deepspeed_zero2.yaml \
+#     --num_processes 4 train.py ../breeze-tts-2 --config configs/... ...
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+deepspeed_config:
+  deepspeed_config_file: configs/deepspeed/zero2.json
+num_machines: 1
+machine_rank: 0
+num_processes: 4
+main_training_function: main
+rdzv_backend: static
+same_network: true
+use_cpu: false

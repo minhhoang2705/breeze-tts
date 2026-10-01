@@ -1,2 +1,8 @@
 -r requirements.txt
 peft>=0.17
+accelerate>=1.1
+wandb>=0.19
+deepspeed>=0.16
+# flash-attn is optional (attn_implementation "auto" falls back to sdpa) and
+# has no portable sdist build without nvcc; install the prebuilt wheel that
+# matches torch/CUDA/Python, see README "Training".
