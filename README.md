@@ -190,7 +190,7 @@ direction (CFG) all go through the same server.
 
 ```bash
 cd serving/sglang_omni
-./bootstrap.sh   # one-time: isolated venv with sglang-omni 0.1.4 + CUDA 13.0 toolchain
+./bootstrap.sh   # default: isolated .venv; uses active Conda if activated
 ./serve.sh       # MODEL=/path/to/checkpoint to serve a fine-tuned export
 
 curl http://127.0.0.1:8000/v1/audio/speech -H 'Content-Type: application/json' \

@@ -252,7 +252,8 @@ design+CFG, clone, edit+CFG, streaming PCM, `MAX_RUNNING=12`):
 At 12 concurrent requests the 12 lanes are full, because CFG requests take two
 each, so new requests queue.
 
-To regenerate the chart:
+To regenerate the chart, use the repository-root Breeze inference environment
+for matplotlib (from this directory):
 `../../.venv/bin/python tools/plot_bench.py ../../outputs/sglang_omni/bench docs/assets/bench.svg`.
 
 ## 9. Known limits
@@ -274,7 +275,7 @@ To regenerate the chart:
 
 | File | Role |
 |---|---|
-| `bootstrap.sh`, `serve.sh` | venv with sglang-omni 0.1.4 + CUDA 13.0 toolchain fixups; launcher with the memory/lane knobs |
+| `bootstrap.sh`, `serve.sh` | default `.venv` or active Conda/PYTHON interpreter; SGLang-Omni 0.1.4 + CUDA 13.0 toolchain fixups and serving knobs |
 | `breeze_omni/registration.py` | out-of-tree registration (HF config, pipeline config, SGLang model) |
 | `breeze_omni/config.py`, `stages.py` | pipeline declaration; preprocessing (templates, reference encoding) |
 | `breeze_omni/request_builders.py`, `payload_types.py` | request state, sampling params, cond/uncond SGLang `Req`s |

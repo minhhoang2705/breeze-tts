@@ -2,13 +2,30 @@
 
 ## Setup
 
-From this directory, create the isolated Python 3.12 environment and install
-SGLang-Omni 0.1.4, the CUDA 13.0 compiler/header compatibility wheels, and the
-Qwen3-TTS tokenizer package:
+By default, the scripts create and use an isolated Python 3.12 `.venv`:
 
 ```bash
 ./bootstrap.sh
+./serve.sh
 ```
+
+To install and run from an activated Conda environment instead (recommended on
+H100 nodes already managed with Conda), create/activate a dedicated serving
+environment first:
+
+```bash
+conda create -n breeze-serving python=3.12 -y  # omit if it already exists
+conda activate breeze-serving
+./bootstrap.sh
+./serve.sh
+```
+
+The scripts detect the active Conda environment and install into/use its Python.
+You can explicitly select an interpreter with `PYTHON=/path/to/python` (or
+`PYTHON=python` after activation). This avoids hard-coding Python 3.12
+`site-packages` paths and keeps the repository-local `.venv` as the default
+when no Conda environment is active. Use a dedicated serving environment rather
+than mixing SGLang-Omni dependencies into a training environment.
 
 The script does not download model weights. By default the server uses the local
 checkpoint at `../../../breeze-tts-2`; download or place the checkpoint there
@@ -104,8 +121,10 @@ instruction + CFG 4, streaming PCM, 24 requests per row, `MAX_RUNNING=12`:
 
 With 12 concurrent requests the lanes are full (CFG requests take two each), so
 requests start queueing. `bench.py` writes `c<N>/results.json` per row, and
-`tools/plot_bench.py` (run with the repo `.venv`, which has matplotlib) turns
-them into [`docs/assets/bench.svg`](docs/assets/bench.svg).
+`tools/plot_bench.py` needs matplotlib from the repository-root inference
+environment, not the serving environment. From this directory, regenerate the
+chart with:
+`../../.venv/bin/python tools/plot_bench.py ../../outputs/sglang_omni/bench docs/assets/bench.svg` writes [`docs/assets/bench.svg`](docs/assets/bench.svg).
 
 For the full story (architecture diagrams, CFG pairing, the memory budget, the
 bugs found during the port and the verification), see
@@ -121,14 +140,15 @@ serve a Vietnamese fine-tune for that.
 ## Tests
 
 ```bash
-PYTHONPATH=. flock /tmp/breeze_gpu.lock .venv/bin/python -m pytest -q tests/
+PYTHON_BIN="${PYTHON:-${CONDA_PREFIX:-$PWD/.venv}/bin/python}"
+PYTHONPATH=. flock /tmp/breeze_gpu.lock "$PYTHON_BIN" -m pytest -q tests/
 ```
 
 The component tests compare against `goldens/` (generate them with
-`tools/make_goldens.py` in the repo `.venv`; see `goldens/README.md`): exact
-prompt ids, prefill embeddings at cosine > 0.999, teacher-forced depth codes,
-and graph == eager. `test_integration_cfg.py` covers CFG pairing and guidance
-order, and `test_scheduler_pairs.py` covers pair admission and deferral.
+`tools/make_goldens.py` in the repository-root Breeze inference environment; see
+`goldens/README.md`): exact prompt ids, prefill embeddings at cosine > 0.999,
+teacher-forced depth codes, and graph == eager. `test_integration_cfg.py` covers
+CFG pairing and guidance order, and `test_scheduler_pairs.py` covers pair admission and deferral.
 `test_live_streaming.py` runs only when a server is up (`./serve.sh` first). For
 plain, design+CFG, clone and edit+CFG, it sends the same greedy request once as
 streamed PCM and once as a buffered WAV. It then requires an identical sample

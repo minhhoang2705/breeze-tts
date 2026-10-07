@@ -3,7 +3,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$ROOT/.venv/bin/activate"
+# Match bootstrap.sh: PYTHON overrides, active Conda is detected, else use .venv.
+if [[ -n "${PYTHON:-}" ]]; then
+  PYTHON_BIN="$(command -v "$PYTHON")"
+elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+  PYTHON_BIN="$CONDA_PREFIX/bin/python"
+else
+  PYTHON_BIN="$ROOT/.venv/bin/python"
+fi
+[[ -x "$PYTHON_BIN" ]] || { echo "serve.sh: Python not executable: $PYTHON_BIN (run ./bootstrap.sh first)" >&2; exit 1; }
+ENV_BIN="$("$PYTHON_BIN" -c 'import sys; print(sys.prefix + "/bin")')"
+SITE="$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+export PATH="$ENV_BIN:$PATH"
 
 MODEL="${MODEL:-$(realpath "$ROOT/../../../breeze-tts-2")}"
 PORT="${PORT:-8000}"
@@ -20,7 +31,7 @@ MAX_RUNNING="${MAX_RUNNING:-12}"
 CUDA_GRAPH_MAX_BS="${CUDA_GRAPH_MAX_BS:-$MAX_RUNNING}"
 ATTENTION="${ATTENTION:-triton}"
 
-CUDA_HOME="$ROOT/.venv/lib/python3.12/site-packages/nvidia/cu13"
+CUDA_HOME="$SITE/nvidia/cu13"
 export CUDA_HOME CUDA_PATH="$CUDA_HOME"
 export PATH="$CUDA_HOME/bin:$PATH"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
