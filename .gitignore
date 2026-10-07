@@ -22,3 +22,7 @@ data/
 # local planning notes, journals, reports
 plans/
 .venv/
+
+# SGLang-Omni runtime artifacts
+serving/sglang_omni/.venv/
+serving/sglang_omni/goldens/*.pt
