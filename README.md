@@ -178,6 +178,45 @@ Both the CLI and API use eager streaming by default and skip graph warmup. Pass 
 
 Individual stage flags are intended for profiling and debugging.
 
+### 🧵 Concurrent Serving with SGLang-Omni
+
+The streaming API above serves one request at a time.
+[`serving/sglang_omni/`](serving/sglang_omni/) serves Breeze TTS 2 on
+[SGLang-Omni](https://github.com/sgl-project/sglang-omni) 0.1.4. It adds
+continuous batching of many concurrent requests, paged KV, CUDA graphs and
+CFG, behind an OpenAI-compatible `/v1/audio/speech` endpoint that returns a
+buffered WAV or streamed PCM. Plain TTS, voice clone, voice design and voice
+direction (CFG) all go through the same server.
+
+```bash
+cd serving/sglang_omni
+./bootstrap.sh   # one-time: isolated venv with sglang-omni 0.1.4 + CUDA 13.0 toolchain
+./serve.sh       # MODEL=/path/to/checkpoint to serve a fine-tuned export
+
+curl http://127.0.0.1:8000/v1/audio/speech -H 'Content-Type: application/json' \
+  -d '{"input":"Hello there.","instructions":"A calm, warm voice.",
+       "stage_params":{"tts_engine":{"cfg_scale":4}},"response_format":"wav"}' -o speech.wav
+```
+
+Measured on one RTX 4070 Ti (12 GB) with the base checkpoint, using a mixed
+workload of plain, clone, design+CFG and direction+CFG requests:
+
+| concurrent requests | audio s / wall s | RTF per request | TTFA p50 |
+|---|---|---|---|
+| 1 | 1.73 | 0.58 | 0.24 s |
+| 4 | 5.44 | 0.65 | 0.41 s |
+| 8 | 9.90 | 0.72 | 0.47 s |
+
+<div align="center">
+  <img src="serving/sglang_omni/docs/assets/bench.svg" alt="SGLang-Omni serving throughput, RTF and time to first audio vs concurrency" width="90%">
+</div>
+
+Whisper WER through the server matches `infer.py` (0.233 vs 0.236 over the same
+30 requests), and streamed PCM is identical to the buffered WAV. For setup and
+API details see [`serving/sglang_omni/README.md`](serving/sglang_omni/README.md).
+For architecture diagrams, the CFG design, the memory budget and the porting
+notes see [`serving/sglang_omni/docs/PORTING.md`](serving/sglang_omni/docs/PORTING.md).
+
 ## 🏋️ Training (LoRA fine-tuning)
 
 `breeze_train/` and `train.py` add a LoRA fine-tuning pipeline around the
