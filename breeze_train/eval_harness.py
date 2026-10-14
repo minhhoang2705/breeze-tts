@@ -29,6 +29,7 @@ from typing import Any
 import torch
 
 from breeze_train.manifest import load_manifest, to_request
+from breeze_train.tracking import add_wandb_args
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_NEW_TOKENS = 1500
@@ -140,7 +141,9 @@ def _normalize(text: str) -> str:
     return text
 
 
-def score_intelligibility(wav_dir: str, manifest_path: str, language: str = "vi") -> dict[str, Any]:
+def score_intelligibility(
+    wav_dir: str, manifest_path: str, language: str = "vi"
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """WER for space-delimited languages, CER otherwise (Vietnamese is
     space-delimited, so WER is the correct metric here -- 'en_zh' split
     from the original phase-10 plan was for English/Chinese; extended here
@@ -172,7 +175,7 @@ def score_intelligibility(wav_dir: str, manifest_path: str, language: str = "vi"
     return result
 
 
-def score_speaker_similarity(wav_dir: str, manifest_path: str) -> dict[str, Any]:
+def score_speaker_similarity(wav_dir: str, manifest_path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     import soundfile as sf
     import torchaudio
     from speechbrain.inference.speaker import EncoderClassifier
@@ -195,12 +198,14 @@ def score_speaker_similarity(wav_dir: str, manifest_path: str) -> dict[str, Any]
         return emb.squeeze().cpu()
 
     records = load_manifest(manifest_path)
-    sims = []
+    sims, rows = [], []
     for record in records:
         gt_emb = _embed(Path(record.audio_path))
-        gen_emb = _embed(Path(wav_dir) / f"{record.id}.wav")
+        gen_path = Path(wav_dir) / f"{record.id}.wav"
+        gen_emb = _embed(gen_path)
         cos = torch.nn.functional.cosine_similarity(gt_emb.unsqueeze(0), gen_emb.unsqueeze(0)).item()
         sims.append(cos)
+        rows.append({"id": record.id, "wav": str(gen_path), "reference_wav": record.audio_path, "similarity": cos})
 
     mean = sum(sims) / len(sims)
     std = (sum((s - mean) ** 2 for s in sims) / len(sims)) ** 0.5
@@ -210,6 +215,37 @@ def score_speaker_similarity(wav_dir: str, manifest_path: str) -> dict[str, Any]
     gc.collect()
     torch.cuda.empty_cache()
     return result
+
+
+def _log_to_wandb(args: argparse.Namespace, metric: str, result: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Summary metrics under eval/<name>/... plus a per-utterance table with audio.
+
+    With --wandb-run-id (e.g. the training run of the evaluated checkpoint) the
+    numbers land in that run; otherwise each scoring step is its own eval run,
+    and --wandb-group ties baseline and tuned together.
+    """
+    from breeze_train.tracking import init_run
+
+    run = init_run(
+        args,
+        job_type="eval",
+        config={"eval": {"name": args.name, "metric": metric, "wav_dir": args.wav_dir, "manifest": args.manifest}},
+    )
+    if run is None:
+        return
+    import wandb
+
+    prefix = f"eval/{args.name}"
+    for key, value in result.items():
+        if isinstance(value, (int, float)):
+            run.summary[f"{prefix}/{metric}/{key}"] = value
+    columns = [c for c in rows[0] if c not in ("wav", "reference_wav")] + ["audio"] if rows else []
+    table = wandb.Table(columns=columns)
+    for row in rows:
+        values = [row[c] for c in columns if c != "audio"]
+        table.add_data(*values, wandb.Audio(row["wav"]) if Path(row["wav"]).is_file() else None)
+    run.log({f"{prefix}/{metric}/utterances": table})
+    run.finish()
 
 
 def write_report(
@@ -298,12 +334,14 @@ def main() -> None:
     p_wer.add_argument("--out", default="outputs/eval/intelligibility.json")
     p_wer.add_argument("--name", required=True)
     p_wer.add_argument("--language", default="vi")
+    add_wandb_args(p_wer, attach=True)
 
     p_spk = sub.add_parser("score-speaker-similarity")
     p_spk.add_argument("wav_dir")
     p_spk.add_argument("manifest")
     p_spk.add_argument("--out", default="outputs/eval/speaker_similarity.json")
     p_spk.add_argument("--name", required=True)
+    add_wandb_args(p_spk, attach=True)
 
     p_report = sub.add_parser("report")
     p_report.add_argument("--out", default="outputs/eval/report.md")
@@ -313,21 +351,23 @@ def main() -> None:
     if args.action == "generate":
         generate_for_manifest(args.ckpt_dir, args.manifest, args.out_dir, args.seed)
     elif args.action == "score-intelligibility":
-        result = score_intelligibility(args.wav_dir, args.manifest, args.language)
+        result, rows = score_intelligibility(args.wav_dir, args.manifest, args.language)
         out_path = Path(args.out)
         data = json.loads(out_path.read_text()) if out_path.exists() else {}
         data[args.name] = result
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(data, indent=2))
         print(f"{args.name}: wer={result['wer']:.4f} cer={result['cer']:.4f}")
+        _log_to_wandb(args, "intelligibility", result, rows)
     elif args.action == "score-speaker-similarity":
-        result = score_speaker_similarity(args.wav_dir, args.manifest)
+        result, rows = score_speaker_similarity(args.wav_dir, args.manifest)
         out_path = Path(args.out)
         data = json.loads(out_path.read_text()) if out_path.exists() else {}
         data[args.name] = result
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(data, indent=2))
         print(f"{args.name}: mean={result['mean']:.4f} std={result['std']:.4f}")
+        _log_to_wandb(args, "speaker_similarity", result, rows)
     elif args.action == "report":
         intelligibility = json.loads(Path("outputs/eval/intelligibility.json").read_text())
         speaker_similarity = json.loads(Path("outputs/eval/speaker_similarity.json").read_text())

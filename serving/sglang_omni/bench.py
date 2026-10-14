@@ -6,6 +6,13 @@ English, plain Vietnamese, voice design with CFG, reference clone, and reference
 edit with CFG. Requests run to their natural end (no max_new_tokens cap), every
 response is saved as a WAV, and the table reports throughput, real-time factor
 (wall time / audio duration) and time to first audio.
+
+With --wandb-project the per-concurrency rows, a per-request table and the WAVs
+of the lowest concurrency are logged to Weights & Biases (breeze_train/tracking.py:
+the API key comes from the repository-root .env). The server's own settings are
+not visible from here, so describe the variant with --wandb-run-name / --wandb-tags
+(e.g. `--wandb-tags depth-compile-on`). This script is stdlib-only otherwise, so it
+also runs with the repository-root venv, which has wandb installed.
 """
 
 from __future__ import annotations
@@ -15,11 +22,16 @@ import base64
 import concurrent.futures
 import json
 import statistics
+import sys
 import time
 import urllib.request
 import wave
 from pathlib import Path
 from typing import Any
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+from breeze_train.tracking import add_wandb_args, init_run
 
 SAMPLE_RATE = 24_000
 
@@ -84,7 +96,10 @@ def run_one(base_url: str, kind: str, body: dict[str, Any], path: Path, timeout:
         output.setframerate(SAMPLE_RATE)
         output.writeframes(pcm[: len(pcm) - len(pcm) % 2])
     duration = len(pcm) / (2 * SAMPLE_RATE)
-    return {"kind": kind, "elapsed": elapsed, "duration": duration, "ttfa": ttfa or elapsed, "text": body["input"]}
+    return {
+        "kind": kind, "elapsed": elapsed, "duration": duration, "ttfa": ttfa or elapsed,
+        "text": body["input"], "wav": str(path),
+    }
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -101,6 +116,7 @@ def main() -> None:
     parser.add_argument("--requests", type=int, default=20)
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 4, 8])
     parser.add_argument("--timeout", type=float, default=120.0, help="per-request socket timeout (s)")
+    add_wandb_args(parser)
     args = parser.parse_args()
     if args.requests < 1 or any(value < 1 for value in args.concurrency):
         parser.error("requests and concurrency values must be positive")
@@ -110,6 +126,20 @@ def main() -> None:
     if args.reference_audio:
         encoded = base64.b64encode(args.reference_audio.read_bytes()).decode("ascii")
         reference = (f"data:audio/wav;base64,{encoded}", args.reference_text)
+
+    run = init_run(
+        args,
+        job_type="benchmark",
+        config={"bench": "serving", "url": args.url, "requests": args.requests,
+                "concurrency": args.concurrency, "kinds": list(KINDS), "with_reference": reference is not None},
+    )
+    if run is not None:
+        import wandb
+
+        run.define_metric("concurrency")
+        run.define_metric("serving/*", step_metric="concurrency")
+        summary_table = wandb.Table(columns=["concurrency", "requests", "errors", "req_per_s", "audio_s_per_s", "rtf_mean", "ttfa_p50", "ttfa_p95"])
+        request_table = wandb.Table(columns=["concurrency", "kind", "text", "duration_s", "elapsed_s", "rtf", "ttfa_s", "audio"])
 
     print("| concurrency | requests | errors | req/s | audio s/s | RTF mean | TTFA p50 (s) | TTFA p95 (s) |")
     print("|---|---|---|---|---|---|---|---|")
@@ -139,6 +169,24 @@ def main() -> None:
             print(f"| {concurrency} | {args.requests} | {len(errors)} | - | - | - | - | - |")
         else:
             ttfa = [r["ttfa"] for r in results]
+            if run is not None:
+                row = {
+                    "req_per_s": len(results) / wall,
+                    "audio_s_per_s": sum(r["duration"] for r in results) / wall,
+                    "rtf_mean": statistics.mean(r["elapsed"] / r["duration"] for r in results),
+                    "ttfa_p50": percentile(ttfa, 0.5),
+                    "ttfa_p95": percentile(ttfa, 0.95),
+                    "errors": len(errors),
+                }
+                run.log({"concurrency": concurrency, **{f"serving/{k}": v for k, v in row.items()}})
+                summary_table.add_data(concurrency, args.requests, len(errors), row["req_per_s"], row["audio_s_per_s"],
+                                       row["rtf_mean"], row["ttfa_p50"], row["ttfa_p95"])
+                with_audio = concurrency == min(args.concurrency)
+                for r in results:
+                    request_table.add_data(
+                        concurrency, r["kind"], r["text"], r["duration"], r["elapsed"], r["elapsed"] / r["duration"],
+                        r["ttfa"], wandb.Audio(r["wav"]) if with_audio else None,
+                    )
             print(
                 f"| {concurrency} | {args.requests} | {len(errors)} | {len(results) / wall:.2f} "
                 f"| {sum(r['duration'] for r in results) / wall:.2f} "
@@ -147,6 +195,9 @@ def main() -> None:
             )
         for error in errors:
             print(f"  ERROR {error}")
+    if run is not None:
+        run.log({"serving_summary": summary_table, "serving_requests": request_table})
+        run.finish()
 
 
 if __name__ == "__main__":

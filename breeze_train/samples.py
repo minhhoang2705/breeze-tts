@@ -16,6 +16,11 @@ ranks simply wait at their next collective.
 Prompt file: JSONL with `id`, `text` and optionally `ref_audio` + `ref_text`
 (zero-shot clone) -- the tts-eval evalset row format.
 
+When a wandb run is active (train.py --wandb-project) each render is also logged
+as `samples/<id>` audio plus `samples/frames/<id>` and `samples/hit_max_frames`
+(the share of prompts that ran into MAX_NEW_TOKENS instead of stopping on EOS),
+at the run's `train/global_step`.
+
 The inference runtime assumes things the training setup does not provide, so
 for the duration of a render: attention runs `eager` (training may use
 flash_attention_2, which the runtime's static KV cache cannot drive), fp32
@@ -107,6 +112,7 @@ class CheckpointSampler(transformers.TrainerCallback):
         # LoRA adapters stay fp32: PEFT casts around them itself.
         masters = [(param, param.data.to("cpu", copy=True)) for name, param in model.named_parameters()
                    if param.dtype == torch.float32 and "lora_" not in name]
+        frames: dict[str, int] = {}
         # Sampling reseeds every RNG per prompt and edits generation_config for inference;
         # both are put back so training (dropout streams, --resume reproducibility, saved
         # full-model configs) is unaffected by having rendered samples.
@@ -139,8 +145,10 @@ class CheckpointSampler(transformers.TrainerCallback):
                 )
                 with sf.SoundFile(out_dir / f"{prompt['id']}.wav", mode="w", samplerate=runtime.sample_rate,
                                   channels=1, subtype="PCM_16") as out:
+                    frames[prompt["id"]] = 0
                     for chunk in runtime.iter_audio_chunks(inputs, request_id=prompt["id"], seed=self.seed):
                         out.write(chunk.audio)
+                        frames[prompt["id"]] += chunk.codec_frames
         finally:
             for key, config in configs.items():
                 config._attn_implementation = attn[key]
@@ -156,6 +164,22 @@ class CheckpointSampler(transformers.TrainerCallback):
             torch.set_rng_state(rng_state[2])
             if rng_state[3] is not None:
                 torch.cuda.set_rng_state_all(rng_state[3])
+        self._log_to_wandb(state.global_step, out_dir, frames)
         elapsed = time.perf_counter() - started
         self.trainer.exclude_from_throughput(elapsed)
         logger.info(f"samples step={state.global_step} n={len(self.prompts)} dir={out_dir} seconds={elapsed:.1f}")
+
+    def _log_to_wandb(self, step: int, out_dir: Path, frames: dict[str, int]) -> None:
+        try:
+            import wandb
+        except ImportError:
+            return
+        if wandb.run is None:
+            return
+        texts = {prompt["id"]: prompt["text"] for prompt in self.prompts}
+        logs: dict[str, Any] = {"train/global_step": step}
+        for prompt_id, count in frames.items():
+            logs[f"samples/{prompt_id}"] = wandb.Audio(str(out_dir / f"{prompt_id}.wav"), caption=texts[prompt_id])
+            logs[f"samples/frames/{prompt_id}"] = count
+        logs["samples/hit_max_frames"] = sum(c >= MAX_NEW_TOKENS for c in frames.values()) / max(len(frames), 1)
+        wandb.log(logs)

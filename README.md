@@ -297,9 +297,22 @@ accelerate launch --config_file configs/accelerate_multi_gpu.yaml --num_processe
 python train.py ... --output-dir outputs/my_run --resume
 python train.py ... --resume outputs/my_run/checkpoint-600
 
-# 2e. Weights & Biases (losses, grad norm, LR, step_time, samples/s, ETA):
+# 2e. Weights & Biases. Put WANDB_API_KEY in .env (copy .env.example; git-ignored,
+#     never overrides an exported variable). The run's config is run_meta.json (git
+#     commit, versions, config, manifest sha256s, trainable counts) next to the
+#     losses, eval losses, grad norms, LR and throughput; with --sample-prompts every
+#     rendered sample is logged as samples/<id> audio too. The run id lands in
+#     --output-dir, so --resume continues the same run. Without credentials it logs
+#     offline (upload with `wandb sync`).
 python train.py ... --wandb-project breeze-vi --wandb-run-name scale3-2xh100 \
-  --wandb-entity <team> --wandb-tags lora,scale3
+  --wandb-entity <team> --wandb-tags lora,scale3 --wandb-group scale3
+#     Eval scores (WER/CER, speaker similarity, a per-utterance table with audio)
+#     go into the checkpoint's training run with --wandb-run-id (see
+#     outputs/my_run/wandb_run.json), or into their own run:
+python -m breeze_train.eval_harness score-intelligibility outputs/eval/tuned data/eval_holdout.jsonl \
+  --name tuned --wandb-project breeze-vi --wandb-run-id <training run id>
+#     scripts/bench_depth_loop.py and serving/sglang_omni/bench.py take the same
+#     --wandb-* flags (job_type "benchmark").
 
 # 2f. Full fine-tuning (--policy p2: backbone, depth decoder, lm_head,
 #     text_encoder_proj; text encoder and codec stay frozen). Trainable weights

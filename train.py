@@ -41,6 +41,7 @@ import models.breeze  # noqa: F401
 from breeze_train.collator import BreezeDataCollator
 from breeze_train.dataset import BreezeTrainDataset
 from breeze_train.policy import apply_policy, enable_memory_savings, trainable_summary, upcast_trainable_to_fp32
+from breeze_train.tracking import add_wandb_args, init_run
 from breeze_train.trainer import BreezeTrainer
 from models.breeze import BreezeForConditionalGeneration
 
@@ -144,10 +145,7 @@ def main() -> None:
         help="Resume model, optimizer, scheduler, RNG and data position from a "
         "checkpoint directory; bare --resume picks the newest checkpoint-* in --output-dir",
     )
-    parser.add_argument("--wandb-project", default=None, help="Enables Weights & Biases logging")
-    parser.add_argument("--wandb-run-name", default=None)
-    parser.add_argument("--wandb-entity", default=None)
-    parser.add_argument("--wandb-tags", default=None, help="Comma-separated tags")
+    add_wandb_args(parser)
     args = parser.parse_args()
 
     cfg = json.loads(args.config.read_text())
@@ -235,7 +233,7 @@ def main() -> None:
         logger.info(f"resume_from_checkpoint={resume_from_checkpoint}")
 
     if state.is_main_process:
-        meta_path = write_run_meta(Path(args.output_dir), {
+        run_meta = {
             "argv": sys.argv,
             "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "host": socket.gethostname(),
@@ -256,19 +254,26 @@ def main() -> None:
             "trainable_params": trainable,
             "global_batch_size": per_device_batch * grad_accum * num_processes,
             "resume_from_checkpoint": resume_from_checkpoint,
-        })
+        }
+        meta_path = write_run_meta(Path(args.output_dir), run_meta)
         logger.info(f"run_meta={meta_path}")
 
     report_to = list(cfg.get("report_to", []))
     if args.wandb_project:
-        # The wandb integration reads these at wandb.init() on rank 0.
-        os.environ["WANDB_PROJECT"] = args.wandb_project
-        if args.wandb_entity:
-            os.environ["WANDB_ENTITY"] = args.wandb_entity
-        if args.wandb_tags:
-            os.environ["WANDB_TAGS"] = args.wandb_tags
         if "wandb" not in report_to:
             report_to.append("wandb")
+        # Rank 0 starts the run itself with run_meta as its config (git, versions,
+        # manifest digests, trainable counts, ...); the Trainer's WandbCallback then
+        # reuses it and adds TrainingArguments. The run id is kept in --output-dir,
+        # so --resume continues the same run.
+        if state.is_main_process:
+            init_run(
+                args,
+                job_type="train",
+                config=run_meta,
+                run_dir=args.output_dir,
+                resume_from=args.output_dir if resume_from_checkpoint is not None else None,
+            )
 
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),

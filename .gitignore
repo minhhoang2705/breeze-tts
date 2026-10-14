@@ -31,3 +31,5 @@ nv_lora/eval/scorer_smoke
 # SGLang-Omni runtime artifacts
 serving/sglang_omni/.venv/
 serving/sglang_omni/goldens/*.pt
+# Weights & Biases local run files (runs started outside --output-dir)
+wandb/
