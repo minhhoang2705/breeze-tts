@@ -2,6 +2,7 @@ runs/
 outputs/
 warmup_manifest.json
 *.wav
+*.log
 
 __pycache__/
 *.py[cod]
@@ -22,6 +23,10 @@ data/
 # local planning notes, journals, reports
 plans/
 .venv/
+nv_lora/codec_cache/*.npy
+nv_lora/eval/gen
+nv_lora/eval/runs
+nv_lora/eval/scorer_smoke
 
 # SGLang-Omni runtime artifacts
 serving/sglang_omni/.venv/
