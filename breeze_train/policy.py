@@ -25,6 +25,15 @@ LORA_TARGET_REGEX = (
     r"(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
 )
 
+# Parameter-name prefix PEFT adds when it wraps the model.
+PEFT_PREFIX = "base_model.model."
+
+
+def top_module(param_name: str) -> str:
+    """`base_model.model.backbone_model.layers.0...` -> `backbone_model`."""
+    name = param_name[len(PEFT_PREFIX):] if param_name.startswith(PEFT_PREFIX) else param_name
+    return name.split(".", 1)[0]
+
 
 def _freeze_all(model: Any) -> None:
     for p in model.parameters():
@@ -129,13 +138,11 @@ def trainable_summary(model: Any) -> dict[str, Any]:
       safetensors header sum.
     """
     per_module: dict[str, int] = {}
-    peft_prefix = "base_model.model."
     for name, param in model.named_parameters(remove_duplicate=False):
         if not param.requires_grad:
             continue
-        unwrapped_name = name[len(peft_prefix):] if name.startswith(peft_prefix) else name
-        top_module = unwrapped_name.split(".", 1)[0]
-        per_module[top_module] = per_module.get(top_module, 0) + param.numel()
+        module = top_module(name)
+        per_module[module] = per_module.get(module, 0) + param.numel()
 
     total = sum(p.numel() for p in model.parameters() if p.requires_grad)
 

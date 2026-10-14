@@ -247,6 +247,24 @@ python train.py ../breeze-tts-2 \
   --output-dir outputs/my_run \
   --max-steps 1000
 
+# Training observability (all optional):
+#   --eval-manifest NAME=PATH   held-out loss every "eval_steps" (config, default save_steps)
+#                               and before step 1 ("eval_on_start", default true); logged as
+#                               eval_<NAME>_loss / _backbone_loss / _depth_decoder_loss.
+#                               Repeatable, e.g. unseen sentences and unseen speakers. Cache
+#                               its clips with step 1 first.
+#   --sample-prompts P.jsonl    renders fixed prompts (id, text, optional ref_audio +
+#                               ref_text) to <output-dir>/samples/step-<N>/ before step 1 and
+#                               at every save.
+#   "disable_tqdm": true        keeps stdout free of the progress bar for detached runs.
+# <output-dir>/train.log records carry "step", "grad_norm/<module>" (post-clip, per
+# top-level module) and throughput net of eval/sampling time; <output-dir>/run_meta.json
+# records git commit + dirty files, versions, config, manifest sha256s and trainable
+# parameter counts. Per-sample loss of any checkpoint over a manifest (outliers, by
+# speaker / position):
+python scripts/per_sample_loss.py ../breeze-tts-2 outputs/my_run/checkpoint-1000 \
+  data/my_manifest.jsonl data/codec_cache outputs/my_run/per_sample_loss.jsonl
+
 # 2b. Same run data-parallel on several GPUs (e.g. a 4x H100 node) via
 #     HF Accelerate DDP. The config's gradient_accumulation_steps is the
 #     single-GPU value and is divided by the process count, so the global
