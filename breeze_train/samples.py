@@ -15,6 +15,14 @@ ranks simply wait at their next collective.
 
 Prompt file: JSONL with `id`, `text` and optionally `ref_audio` + `ref_text`
 (zero-shot clone) -- the tts-eval evalset row format.
+
+The inference runtime assumes things the training setup does not provide, so
+for the duration of a render: attention runs `eager` (training may use
+flash_attention_2, which the runtime's static KV cache cannot drive), fp32
+master weights of p0/p1b/p2 run as bf16 (the runtime mixes them with bf16
+frozen weights), and every parameter gets its training dtype back afterwards
+(building the runtime upcasts lm_head and the depth codebooks head to fp32 in
+place).
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import transformers
+from transformers import PretrainedConfig
 
 from breeze_infer.runtime import set_all_seeds, update_generation_config_for_breeze
 from breeze_infer.templates import get_template, prepare_inputs, select_template_name
@@ -92,6 +101,12 @@ class CheckpointSampler(transformers.TrainerCallback):
         wrapped = self.trainer.model
         model = wrapped.get_base_model() if hasattr(wrapped, "get_base_model") else wrapped
         was_training = model.training
+        configs = {id(c): c for m in model.modules() if isinstance(c := getattr(m, "config", None), PretrainedConfig)}
+        attn = {key: c._attn_implementation for key, c in configs.items()}
+        dtypes = [(param, param.dtype) for param in model.parameters()]
+        # LoRA adapters stay fp32: PEFT casts around them itself.
+        masters = [(param, param.data.to("cpu", copy=True)) for name, param in model.named_parameters()
+                   if param.dtype == torch.float32 and "lora_" not in name]
         # Sampling reseeds every RNG per prompt and edits generation_config for inference;
         # both are put back so training (dropout streams, --resume reproducibility, saved
         # full-model configs) is unaffected by having rendered samples.
@@ -100,6 +115,10 @@ class CheckpointSampler(transformers.TrainerCallback):
         generation_config = copy.deepcopy(model.generation_config)
         model.eval()
         try:
+            for config in configs.values():
+                config._attn_implementation = "eager"
+            for param, _ in masters:
+                param.data = param.data.to(torch.bfloat16)
             update_generation_config_for_breeze(model)
             runtime = FastBreezeStreamingRuntime(
                 model, self._audio_tokenizer,
@@ -123,6 +142,13 @@ class CheckpointSampler(transformers.TrainerCallback):
                     for chunk in runtime.iter_audio_chunks(inputs, request_id=prompt["id"], seed=self.seed):
                         out.write(chunk.audio)
         finally:
+            for key, config in configs.items():
+                config._attn_implementation = attn[key]
+            for param, master in masters:
+                param.data = master.to(param.device)
+            for param, dtype in dtypes:
+                if param.dtype != dtype:
+                    param.data = param.data.to(dtype)
             model.train(was_training)
             model.generation_config = generation_config
             random.setstate(rng_state[0])
