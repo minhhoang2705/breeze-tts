@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import base64
+import functools
+import hashlib
 import io
 import logging
+import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -19,29 +24,39 @@ from sglang_omni.utils.device import resolve_device_spec
 from .request_builders import build_breeze_state
 
 logger = logging.getLogger(__name__)
-_PREPROCESS_CONTEXT: tuple[Any, Any] | None = None
-
-
-def set_preprocessing_context(tokenizer: Any, audio_tokenizer: Any) -> None:
-    global _PREPROCESS_CONTEXT
-    _PREPROCESS_CONTEXT = (tokenizer, audio_tokenizer)
 
 
 def create_preprocessing_executor(
     model_path: str, *, max_concurrency: int = 4
 ) -> ThreadedSimpleScheduler:
-    del model_path
+    """Load the prompt tokenizer and the reference-audio codec for this stage.
+
+    The stage runs in its own process (config.py), so reference encoding does
+    not compete for the GIL with the engine's decode loop. The codec encodes in
+    fp32 on the GPU like Breeze's infer.py; BREEZE_REF_ENCODE_DEVICE=cpu
+    encodes on CPU instead.
+    """
+    from transformers import AutoTokenizer
+
+    from .engine_builder import load_breeze_codec
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, tokenizer_type="gemma", fix_mistral_regex=False, trust_remote_code=True
+    )
+    device = "cpu" if os.environ.get("BREEZE_REF_ENCODE_DEVICE", "cuda") == "cpu" else "cuda"
+    audio_tokenizer = load_breeze_codec(model_path, device=device, dtype="float32")
+    logger.info("Breeze preprocessing: reference codec on %s, %d workers", device, max_concurrency)
     return ThreadedSimpleScheduler(
-        preprocess_breeze_payload,
+        functools.partial(
+            preprocess_breeze_payload, tokenizer=tokenizer, audio_tokenizer=audio_tokenizer
+        ),
         max_concurrency=max_concurrency,
     )
 
 
-def preprocess_breeze_payload(payload: StagePayload) -> StagePayload:
-    context = _PREPROCESS_CONTEXT
-    if context is None:
-        raise RuntimeError("Breeze preprocessing context was not initialized by the engine")
-    tokenizer, audio_tokenizer = context
+def preprocess_breeze_payload(
+    payload: StagePayload, *, tokenizer: Any, audio_tokenizer: Any
+) -> StagePayload:
     raw_inputs = payload.request.inputs or {}
     if isinstance(raw_inputs, str):
         inputs = {"text": raw_inputs}
@@ -77,10 +92,7 @@ def preprocess_breeze_payload(payload: StagePayload) -> StagePayload:
         payload.request.inputs = inputs
     ref_codes = inputs.get("ref_codes")
     if ref_codes is None and ref_audio is not None:
-        waveform, sample_rate = _read_audio(ref_audio)
-        with torch.inference_mode():
-            encoded = audio_tokenizer.encode(waveform.numpy(), sr=sample_rate)
-        ref_codes = encoded.audio_codes[0].to(dtype=torch.long, device="cpu").contiguous()
+        ref_codes = _encode_reference(audio_tokenizer, ref_audio)
     elif ref_codes is not None:
         ref_codes = torch.as_tensor(ref_codes, dtype=torch.long)
     state = build_breeze_state(payload, tokenizer, ref_codes=ref_codes)
@@ -89,7 +101,37 @@ def preprocess_breeze_payload(payload: StagePayload) -> StagePayload:
     return StagePayload(request_id=payload.request_id, request=payload.request, data=state_data)
 
 
-def _read_audio(value: Any) -> tuple[torch.Tensor, int]:
+# Clone requests may reuse a reference voice. Encoding a reference with the 12 Hz
+# codec costs ~10 ms on the GPU (~0.7 s on CPU, BREEZE_REF_ENCODE_DEVICE=cpu) for a
+# 7 s clip, so cache the codes by the hash of the audio bytes: identical bytes give
+# identical codes, so outputs do not change.
+_REF_CODE_CACHE: OrderedDict[str, torch.Tensor] = OrderedDict()
+_REF_CODE_CACHE_SIZE = 128
+_REF_CODE_LOCK = threading.Lock()
+
+
+def _encode_reference(audio_tokenizer: Any, ref_audio: Any) -> torch.Tensor:
+    audio_bytes = _audio_bytes(ref_audio)
+    key = hashlib.sha256(audio_bytes).hexdigest()
+    with _REF_CODE_LOCK:
+        cached = _REF_CODE_CACHE.get(key)
+        if cached is not None:
+            _REF_CODE_CACHE.move_to_end(key)
+            return cached.clone()
+    waveform, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
+    mono = np.asarray(waveform, dtype=np.float32).mean(axis=1)
+    with torch.inference_mode():
+        encoded = audio_tokenizer.encode(mono, sr=int(sample_rate))
+    codes = encoded.audio_codes[0].to(dtype=torch.long, device="cpu").contiguous()
+    with _REF_CODE_LOCK:
+        _REF_CODE_CACHE[key] = codes
+        _REF_CODE_CACHE.move_to_end(key)
+        while len(_REF_CODE_CACHE) > _REF_CODE_CACHE_SIZE:
+            _REF_CODE_CACHE.popitem(last=False)
+    return codes.clone()
+
+
+def _audio_bytes(value: Any) -> bytes:
     data_uri = False
     if isinstance(value, dict):
         data = value.get("bytes")
@@ -103,20 +145,14 @@ def _read_audio(value: Any) -> tuple[torch.Tensor, int]:
         else:
             value = value.get("audio") or value.get("ref_audio")
     if isinstance(value, (bytes, bytearray, memoryview)):
-        audio_bytes = bytes(value)
-    elif isinstance(value, str) and value.startswith("data:"):
-        audio_bytes = base64.b64decode(value.partition(",")[2])
-    elif isinstance(value, str) and data_uri:
-        audio_bytes = base64.b64decode(value)
-    elif isinstance(value, str):
-        waveform, rate = sf.read(Path(value), dtype="float32", always_2d=True)
-        mono = np.asarray(waveform, dtype=np.float32).mean(axis=1)
-        return torch.from_numpy(mono), int(rate)
-    else:
-        raise ValueError("ref_audio must be a path, data URI, or encoded audio bytes")
-    waveform, rate = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
-    mono = np.asarray(waveform, dtype=np.float32).mean(axis=1)
-    return torch.from_numpy(mono), int(rate)
+        return bytes(value)
+    if isinstance(value, str) and value.startswith("data:"):
+        return base64.b64decode(value.partition(",")[2])
+    if isinstance(value, str) and data_uri:
+        return base64.b64decode(value)
+    if isinstance(value, str):
+        return Path(value).read_bytes()
+    raise ValueError("ref_audio must be a path, data URI, or encoded audio bytes")
 
 
 def create_sglang_tts_engine_executor(

@@ -120,9 +120,7 @@ class BreezeTtsEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id, server_args
-        from transformers import AutoTokenizer
         from .components.text_encoder import BreezeTextEncoder
-        from .stages import set_preprocessing_context
 
         model = model_worker.model_runner.model
         dtype = torch.bfloat16 if self.dtype == "bfloat16" else torch.float16
@@ -131,13 +129,6 @@ class BreezeTtsEngineBuilder(TtsEngineBuilder):
         )
         model.depth_decoder.capture_graph(device, dtype)
         logger.info("Breeze depth decoder: captured CUDA graph for %d lanes", model.depth_decoder.max_rows)
-        tokenizer = AutoTokenizer.from_pretrained(
-            checkpoint_dir, tokenizer_type="gemma", fix_mistral_regex=False, trust_remote_code=True
-        )
-        audio_tokenizer = load_breeze_codec(
-            checkpoint_dir, device="cpu", dtype="float32"
-        )
-        set_preprocessing_context(tokenizer, audio_tokenizer)
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         return BreezeTTSModelRunner(model_worker, output_proc)

@@ -6,6 +6,7 @@ and equations mirror BreezeAttention/DecoderLayer at models/breeze.py:289-425.
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -239,10 +240,16 @@ class BreezeDepthDecoder(nn.Module):
         """Capture the depth loop once, over all max_rows lanes.
 
         Every decode step uses the same lane layout (conditional rows, then CFG
-        uncond lanes, then padding), so one graph serves any batch/CFG mix. The
-        loop is weight-bandwidth bound, so idle padding lanes cost almost nothing,
+        uncond lanes, then padding), so one graph serves any batch/CFG mix. Idle
+        padding lanes cost almost nothing (each step is a handful of tiny matmuls),
         while per-shape graphs cost ~65 MB of device memory each. Capturing at
         startup also keeps live decode steps from stalling on a capture.
+
+        The loop runs ~45 small kernels per layer per codebook step, so on fast
+        GPUs it is bound by kernel count, not bandwidth. torch.compile fuses them
+        (H100, 12 lanes: 26.4 -> 12.7 ms per frame; teacher-forced top-1 vs an
+        fp32 reference 96.9% compiled vs 96.7% uncompiled). BREEZE_COMPILE_DEPTH=0
+        captures the uncompiled loop instead.
         """
         lanes = self.max_rows
         width = int(_get(self.cfg, "backbone_hidden_size", self.audio_embed_size))
@@ -257,12 +264,21 @@ class BreezeDepthDecoder(nn.Module):
             torch.full((lanes,), 50, device=device, dtype=torch.long),
             torch.ones(lanes, device=device),
         )
-        self._run_lanes(*inputs)
+        run = self._run_lanes
+        if os.environ.get("BREEZE_COMPILE_DEPTH", "1") != "0":
+            run = torch.compile(self._run_lanes, dynamic=False)
+        # Compilation and autotuning must finish before capture, off the capture stream.
+        side = torch.cuda.Stream(device=device)
+        side.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                run(*inputs)
+        torch.cuda.current_stream(device).wait_stream(side)
         graph = torch.cuda.CUDAGraph()
         # thread_local: the vocoder stage shares this process and GPU and keeps
         # launching work from its own thread while this graph is captured.
         with torch.cuda.graph(graph, capture_error_mode="thread_local"):
-            output = self._run_lanes(*inputs)
+            output = run(*inputs)
         self._graph, self._graph_inputs, self._graph_output = graph, inputs, output
 
     def _lane_inputs(
